@@ -108,13 +108,14 @@ def estimate_factor_model(
     if n_factors < 1:
         raise ValueError(f"n_factors must be at least 1, got {n_factors}")
 
+    returns = returns.replace([np.inf, -np.inf], np.nan).fillna(0.0)
     # Compute correlation matrix
-    cov_matrix = returns.corr().values   # ERROR: it was a variance-covariance matrix, not a correlation one since the returns are
-                                        #        not standadized yet
+    corr_matrix = returns.corr().values   # ERROR: it was a variance-covariance matrix, not a correlation one since the returns are
+                                          #        not standadized yet
 
     # Eigendecomposition
     # RMK=>principal_component_analysis function gives back the eigenvalues and eigenvectors already sorted
-    eigenvalues, eigenvectors = principal_component_analysis(cov_matrix)
+    eigenvalues, eigenvectors = principal_component_analysis(corr_matrix)
 
     # Select top n_factors
     eigenvalues_selected = eigenvalues[0:n_factors]
@@ -122,7 +123,9 @@ def estimate_factor_model(
 
     # Factor returns
     # In order to compute the factor returns we use equation (9) of the paper
-    standardized_returns = returns / returns.std()
+    vols = returns.std()
+    vols[vols < 1e-6] = 1.0
+    standardized_returns = returns / vols
     factors = standardized_returns @ eigenvectors_selected
     factors_df = pd.DataFrame(
         factors, index=returns.index, columns=[f"PC{i + 1}" for i in range(n_factors)]
@@ -175,7 +178,23 @@ def estimate_ou_window_residuals(
     alphas = np.zeros(N)
     residuals = np.zeros((T_ou, N))
 
-    # !!! COMPLETE AS APPROPRIATE !!!
+    # We compute the matrix adding a column for alfa
+    X_raw = np.column_stack([np.ones(T_ou), factors_ou.values])
+    Y_raw = returns_ou.values
+    X = np.nan_to_num(X_raw, nan=0.0, posinf=0.0, neginf=0.0)
+    Y = np.nan_to_num(Y_raw, nan=0.0, posinf=0.0, neginf=0.0)
+    # B st X @ B = Y is found using np.linalg.lstsq
+    B = np.linalg.lstsq(X, Y, rcond=None)[0] # I don't need the other parts that this function gives back
+    
+    # We define alfa as the first line of B
+    alphas[:] = B[0, :]
+    
+    # Factor Loadings:
+    # 'betas' is initialized as (N, n_factors), so we have to transpose B
+    betas[:, :] = B[1:, :].T
+    
+    # Residuals:
+    residuals[:, :] = Y - (X @ B)
 
     residuals_df = pd.DataFrame(
         residuals, index=returns_ou.index, columns=returns_ou.columns
