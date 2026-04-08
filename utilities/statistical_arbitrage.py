@@ -109,17 +109,21 @@ def estimate_factor_model(
         raise ValueError(f"n_factors must be at least 1, got {n_factors}")
 
     # Compute correlation matrix
-    cov_matrix = returns.cov().values
+    cov_matrix = returns.corr().values   # ERROR: it was a variance-covariance matrix, not a correlation one since the returns are
+                                        #        not standadized yet
 
     # Eigendecomposition
-    eigenvalues, eigenvectors = None  # !!! COMPLETE AS APPROPRIATE !!!
+    # RMK=>principal_component_analysis function gives back the eigenvalues and eigenvectors already sorted
+    eigenvalues, eigenvectors = principal_component_analysis(cov_matrix)
 
     # Select top n_factors
-    eigenvalues_selected = None  # !!! COMPLETE AS APPROPRIATE !!!
-    eigenvectors_selected = None  # !!! COMPLETE AS APPROPRIATE !!!
+    eigenvalues_selected = eigenvalues[0:n_factors]
+    eigenvectors_selected = eigenvectors[:, 0:n_factors]
 
     # Factor returns
-    factors = None  # !!! COMPLETE AS APPROPRIATE !!!
+    # In order to compute the factor returns we use equation (9) of the paper
+    standardized_returns = returns / returns.std()
+    factors = standardized_returns @ eigenvectors_selected
     factors_df = pd.DataFrame(
         factors, index=returns.index, columns=[f"PC{i + 1}" for i in range(n_factors)]
     )
@@ -131,7 +135,7 @@ def estimate_factor_model(
     ).values()
 
     # Explained variance ratio
-    explained_variance = None  # !!! COMPLETE AS APPROPRIATE !!!
+    explained_variance = eigenvalues_selected / np.sum(eigenvalues)
 
     return {
         "eigenvalues": eigenvalues,
