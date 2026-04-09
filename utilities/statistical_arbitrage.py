@@ -61,8 +61,8 @@ def compute_volume_adjusted_returns(
 
 def estimate_factor_model(
     returns: pd.DataFrame,
-    n_factors: int = 15,
-) -> dict[str, Any]:
+    n_factors: int = 15,   # 15 is the number given in the paper, but in the Assignment 
+) -> dict[str, Any]:       # is 4 (no problem since it is already given as an input from the main)
     """Estimate a PCA-based factor model for stock returns.
 
     The model decomposes returns as:
@@ -138,6 +138,8 @@ def estimate_factor_model(
     ).values()
 
     # Explained variance ratio
+    # RMK=>I made the error initially of dividing by only the selected eigenvalues, maybe explain on the 
+    # report why you have to divide by all the eigenvalues of the matrix
     explained_variance = eigenvalues_selected / np.sum(eigenvalues)
 
     return {
@@ -181,6 +183,7 @@ def estimate_ou_window_residuals(
     # We compute the matrix adding a column for alfa
     X_raw = np.column_stack([np.ones(T_ou), factors_ou.values])
     Y_raw = returns_ou.values
+    # We make sure that there are no NaN in the matrices X and Y:
     X = np.nan_to_num(X_raw, nan=0.0, posinf=0.0, neginf=0.0)
     Y = np.nan_to_num(Y_raw, nan=0.0, posinf=0.0, neginf=0.0)
     # B st X @ B = Y is found using np.linalg.lstsq
@@ -234,23 +237,42 @@ def estimate_ou_parameters(
     Returns:
         Dictionary with kappa, m, sigma, sigma_eq, half_life, a, b, var_epsilon.
     """
-    X = residuals.values
-    T = len(X)
 
-    a = None  # !!! COMPLETE AS APPROPRIATE !!!
-    b = None  # !!! COMPLETE AS APPROPRIATE !!!
-    epsilon = None  # !!! COMPLETE AS APPROPRIATE !!!
-    var_epsilon = None  # !!! COMPLETE AS APPROPRIATE !!!
+    # The formulas for the components here below are almost at the end of the paper
+    X = residuals.cumsum()          # We have to pass the cumulative residuals, not the sinmple residuals!! (non ricordo se X fosse data diretta dai prof o se l'avessi messa io
+                                    # copiando dal paper)
 
-    kappa = None  # !!! COMPLETE AS APPROPRIATE !!!
-    m = None  # !!! COMPLETE AS APPROPRIATE !!!
-    sigma = None  # !!! COMPLETE AS APPROPRIATE !!!
+    X_t = X[:-1] # from 0 to the element before the last element
+    X_t_plus_one = X[1:] # from 1 to the last element
 
-    # Equilibrium standard deviation
-    sigma_eq = None  # !!! COMPLETE AS APPROPRIATE !!!
+    # We create the usual matrix in order to make the regression:
+    X_mat = np.column_stack([X_t, np.ones(len(X_t))])
+    coefficients = np.linalg.lstsq(X_mat, X_t_plus_one, rcond=None)[0]
 
-    # Half-life of mean reversion
-    half_life = None  # !!! COMPLETE AS APPROPRIATE !!!
+    a = coefficients[1]
+    b = coefficients[0]
+    epsilon = X_t_plus_one - a - b * X_t
+    var_epsilon = np.var(epsilon)
+    # Il seguente blocco if-else non c'era originariamente, commentalo nel paper (è quello che viene detto verso la fine del paper, tipo pag 45)
+    # As written in the paper, we have to be cautious with the values of b, in order to obtain always a convergence
+    if b <= 0 or b >= 1:
+        # If the process isn't mean-reverting, we return zeroes/infinities
+        kappa = 0
+        m = 0
+        sigma = 0
+        sigma_eq = 0
+        half_life = np.inf
+    else:
+        kappa = -np.log(b) / dt
+        m = a / (1-b)
+        sigma = np.sqrt((var_epsilon * 2 * kappa) / (1 - b**2))
+
+        # Equilibrium standard deviation
+        sigma_eq = np.sqrt(var_epsilon / (1 - b**2))
+
+        # Half-life of mean reversion
+        # Solve exp{-kt} = 1/2
+        half_life = np.log(2) / kappa
 
     return {
         "kappa": kappa,
@@ -287,8 +309,17 @@ def estimate_all_ou_parameters(
         )
 
     # Center O-U equilibrium means by subtracting the cross-sectional average
+    # In the paper (proprio fine section 9) the m is computed wrt a and b, but estimate_ou_parameters
+    # gives back directly the m's for each asset, so it is sufficient to make the mean driectly of the
+    # m's of the assets. 
+    # Our function does the mean by default, ie center_ou_means = 1 by default
     if center_ou_means:
-        pass  # !!! COMPLETE AS APPROPRIATE !!!
+        m_all_assets = [parameter["m"] for parameter in ou_params.values()]
+
+        # cross sectional avg
+        m_mean = np.mean(m_all_assets)
+        for asset in ou_params:
+            ou_params[asset]["m"] = ou_params[asset]["m"] - m_mean
 
     return ou_params
 
@@ -318,9 +349,17 @@ def compute_s_score(
         columns=cumulative_residuals.columns,
         dtype=float,
     )
+    params_df = pd.DataFrame(ou_params).T
+    m = params_df['m']
+    sigma_eq = params_df['sigma_eq']
 
-    # !!! COMPLETE AS APPROPRIATE !!!
-
+    s_scores = (cumulative_residuals - m) / sigma_eq
+    # if you want modified s_scores
+    if modified:
+        kappa = params_df['kappa']
+        alpha = params_df['alpha']
+        s_scores = s_scores - (alpha / (kappa * sigma_eq))
+    
     return s_scores
 
 
