@@ -46,12 +46,12 @@ def compute_volume_adjusted_returns(
     ret = returns.loc[common_idx, common_cols]
 
     # Trailing average volume
-    avg_volume = None  # !!! COMPLETE AS APPROPRIATE !!!
+    avg_volume = vol.rolling(window=trailing_window).mean()  
 
     # Volume adjustment ratio: <δV> / V_t
     # Clip volume to avoid division by zero or extreme ratios
     vol_clipped = vol.clip(lower=1)
-    adjustment = None  # !!! COMPLETE AS APPROPRIATE !!!
+    adjustment = avg_volume / vol_clipped 
 
     # Cap extreme adjustments (e.g., when volume drops to near zero)
     adjustment = adjustment.clip(upper=10.0)
@@ -61,8 +61,8 @@ def compute_volume_adjusted_returns(
 
 def estimate_factor_model(
     returns: pd.DataFrame,
-    n_factors: int = 15,   # 15 is the number given in the paper, but in the Assignment 
-) -> dict[str, Any]:       # is 4 (no problem since it is already given as an input from the main)
+    n_factors: int = 15,
+) -> dict[str, Any]:
     """Estimate a PCA-based factor model for stock returns.
 
     The model decomposes returns as:
@@ -108,29 +108,23 @@ def estimate_factor_model(
     if n_factors < 1:
         raise ValueError(f"n_factors must be at least 1, got {n_factors}")
 
-    returns = returns.replace([np.inf, -np.inf], np.nan).fillna(0.0)
     # Compute correlation matrix
-    corr_matrix = returns.corr().values   # ERROR: it was a variance-covariance matrix, not a correlation one since the returns are
-                                          #        not standadized yet
+    cov_matrix = returns.corr().values      # ERROR: it was a variance-covariance matrix, not a correlation one since the returns are
+                                            #        not standadized yet
 
     # Eigendecomposition
-    # RMK=>principal_component_analysis function gives back the eigenvalues and eigenvectors already sorted
-    eigenvalues, eigenvectors = principal_component_analysis(corr_matrix)
+    eigenvalues, eigenvectors = principal_component_analysis(cov_matrix)
 
     # Select top n_factors
-    eigenvalues_selected = eigenvalues[0:n_factors]
-    eigenvectors_selected = eigenvectors[:, 0:n_factors]
+    eigenvalues_selected = eigenvalues[:n_factors]  
+    eigenvectors_selected = eigenvectors[:, :n_factors] 
 
     # Factor returns
-    # In order to compute the factor returns we use equation (9) of the paper
-    vols = returns.std()
-    vols[vols < 1e-6] = 1.0
-    standardized_returns = returns / vols
-    factors = standardized_returns @ eigenvectors_selected
+    factors = np.array((returns / returns.std()) @ eigenvectors_selected)
+
     factors_df = pd.DataFrame(
         factors, index=returns.index, columns=[f"PC{i + 1}" for i in range(n_factors)]
     )
-
     # For each asset, regress returns on factors to get betas and alpha
     residuals_df, betas_df, alphas_series = estimate_ou_window_residuals(
         returns,
@@ -138,9 +132,7 @@ def estimate_factor_model(
     ).values()
 
     # Explained variance ratio
-    # RMK=>I made the error initially of dividing by only the selected eigenvalues, maybe explain on the 
-    # report why you have to divide by all the eigenvalues of the matrix
-    explained_variance = eigenvalues_selected / np.sum(eigenvalues)
+    explained_variance = eigenvalues_selected / eigenvalues.sum()
 
     return {
         "eigenvalues": eigenvalues,
@@ -175,30 +167,34 @@ def estimate_ou_window_residuals(
     factors_ou = factors.iloc[-ou_window:]
     T_ou, N = returns_ou.shape
     n_factors = factors_ou.shape[1]
-
     betas = np.zeros((N, n_factors))
     alphas = np.zeros(N)
     residuals = np.zeros((T_ou, N))
 
-    # We compute the matrix adding a column for alfa
-    X_raw = np.column_stack([np.ones(T_ou), factors_ou.values])
-    Y_raw = returns_ou.values
-    # We make sure that there are no NaN in the matrices X and Y:
-    X = np.nan_to_num(X_raw, nan=0.0, posinf=0.0, neginf=0.0)
-    Y = np.nan_to_num(Y_raw, nan=0.0, posinf=0.0, neginf=0.0)
-    # B st X @ B = Y is found using np.linalg.lstsq
-    B = np.linalg.lstsq(X, Y, rcond=None)[0] # I don't need the other parts that this function gives back
+    # Add intercept column natively in pandas
+    X_df = factors_ou.copy()
+    X_df.insert(0, 'alpha', 1.0)
     
-    # We define alfa as the first line of B
-    alphas[:] = B[0, :]
-    
-    # Factor Loadings:
-    # 'betas' is initialized as (N, n_factors), so we have to transpose B
-    betas[:, :] = B[1:, :].T
-    
-    # Residuals:
-    residuals[:, :] = Y - (X @ B)
+    # Convert to numpy array for OLS
+    X_aug = X_df.values
+    #display(X_aug)
+    Y = returns_ou.values
 
+    # Vectorized OLS regression using NumPy
+    # B contains alpha in the first row, betas in the remaining rows
+    B, residuals_by_function, _, _ = np.linalg.lstsq(X_aug, Y, rcond=None)
+
+    # Extract alphas and betas
+    alphas = B[0, :]
+    betas = B[1:, :].T
+
+    # Compute daily residuals
+    daily_residuals = Y - X_aug @ B
+
+    prova = residuals_by_function - daily_residuals
+
+    # Compute cumulative residuals
+    residuals = np.cumsum(daily_residuals, axis=0)
     residuals_df = pd.DataFrame(
         residuals, index=returns_ou.index, columns=returns_ou.columns
     )
@@ -237,42 +233,29 @@ def estimate_ou_parameters(
     Returns:
         Dictionary with kappa, m, sigma, sigma_eq, half_life, a, b, var_epsilon.
     """
+    X = residuals.values
 
-    # The formulas for the components here below are almost at the end of the paper
-    X = residuals.cumsum()          # We have to pass the cumulative residuals, not the sinmple residuals!! (non ricordo se X fosse data diretta dai prof o se l'avessi messa io
-                                    # copiando dal paper)
+    # AR(1) data preparation
+    X_t = X[:-1]
+    X_t_1 = X[1:]
 
-    X_t = X[:-1] # from 0 to the element before the last element
-    X_t_plus_one = X[1:] # from 1 to the last element
-
-    # We create the usual matrix in order to make the regression:
-    X_mat = np.column_stack([X_t, np.ones(len(X_t))])
-    coefficients = np.linalg.lstsq(X_mat, X_t_plus_one, rcond=None)[0]
-
-    a = coefficients[1]
-    b = coefficients[0]
-    epsilon = X_t_plus_one - a - b * X_t
+    # OLS Regression: X_{t+1} = a + b * X_t
+    b, a = np.polyfit(X_t, X_t_1, 1)
+    
+    epsilon = X_t_1 - a - b * X_t
     var_epsilon = np.var(epsilon)
-    # Il seguente blocco if-else non c'era originariamente, commentalo nel paper (è quello che viene detto verso la fine del paper, tipo pag 45)
-    # As written in the paper, we have to be cautious with the values of b, in order to obtain always a convergence
-    if b <= 0 or b >= 1:
-        # If the process isn't mean-reverting, we return zeroes/infinities
-        kappa = 0
-        m = 0
-        sigma = 0
-        sigma_eq = 0
-        half_life = np.inf
-    else:
-        kappa = -np.log(b) / dt
-        m = a / (1-b)
-        sigma = np.sqrt((var_epsilon * 2 * kappa) / (1 - b**2))
 
-        # Equilibrium standard deviation
-        sigma_eq = np.sqrt(var_epsilon / (1 - b**2))
+    # Recover O-U parameters
+    kappa = -np.log(b) / dt
+    m = a / (1 - b)
+    denom = 1 - b**2
+    sigma = np.sqrt(var_epsilon * 2 * kappa / denom) if denom > 0 else np.nan
 
-        # Half-life of mean reversion
-        # Solve exp{-kt} = 1/2
-        half_life = np.log(2) / kappa
+    # Equilibrium standard deviation
+    sigma_eq = np.sqrt(var_epsilon / denom) if denom > 0 else np.nan
+
+    # Half-life of mean reversion
+    half_life = np.log(2) / kappa
 
     return {
         "kappa": kappa,
@@ -309,18 +292,13 @@ def estimate_all_ou_parameters(
         )
 
     # Center O-U equilibrium means by subtracting the cross-sectional average
-    # In the paper (proprio fine section 9) the m is computed wrt a and b, but estimate_ou_parameters
-    # gives back directly the m's for each asset, so it is sufficient to make the mean driectly of the
-    # m's of the assets. 
-    # Our function does the mean by default, ie center_ou_means = 1 by default
     if center_ou_means:
-        m_all_assets = [parameter["m"] for parameter in ou_params.values()]
-
-        # cross sectional avg
-        m_mean = np.mean(m_all_assets)
+        all_m = [p['m'] for p in ou_params.values()]
+        avg_m = np.mean(all_m)
+        
         for asset in ou_params:
-            ou_params[asset]["m"] = ou_params[asset]["m"] - m_mean
-
+            ou_params[asset]['m'] -= avg_m
+            
     return ou_params
 
 
@@ -362,7 +340,6 @@ def compute_s_score(
     
     return s_scores
 
-
 def update_positions(
     current_positions: dict[str, float],
     cur_s_scores: pd.Series,
@@ -375,31 +352,54 @@ def update_positions(
     """Update positions for a single day based on current s-scores and previous positions.
 
     Trading rules:
-        - Buy to open if s < -s_bo
-        - Sell to open if s > +s_so
-        - Close long if s > -s_bc
-        - Close short if s < +s_sc
+    - Buy to open if s < -s_bo
+    - Sell to open if s > +s_so
+    - Close long if s > -s_bc
+    - Close short if s < +s_sc
 
     Args:
-        current_positions: Previous positions {asset: +1/-1/0}.
-        cur_s_scores: Current s-scores for all assets.
-        valid_assets: Assets passing the O-U parameter filter.
-        s_bo: Threshold to open long position.
-        s_so: Threshold to open short position.
-        s_bc: Threshold to close long position.
-        s_sc: Threshold to close short position.
+    current_positions: Previous positions {asset: +1/-1/0}.
+    cur_s_scores: Current s-scores for all assets.
+    valid_assets: Assets passing the O-U parameter filter.
+    s_bo: Threshold to open long position.
+    s_so: Threshold to open short position.
+    s_bc: Threshold to close long position.
+    s_sc: Threshold to close short position.
 
     Returns:
-        Updated positions dict for today.
+    Updated positions dict for today.
     """
     new_positions: dict[str, float] = {}
 
-    for asset in cur_s_scores.index:
-        s = cur_s_scores[asset]
-        prev = current_positions.get(asset, 0.0)
+    for asset, s in cur_s_scores.items():
+        # I fwe don't have the s-score we are not on the mkt
+        if pd.isna(s):
+            new_positions[asset] = 0.0
+        continue
 
-        ### !!! COMPLETE AS APPROPRIATE !!!
+    prev = current_positions.get(asset, 0.0)
+    # We need to distinguish the cases wr to the positions in which we were in the previous instant
+    if prev == 0:
+        if asset in valid_assets:
+            if s < -s_bo:
+                new_positions[asset] = +1
+            elif s > s_so:
+                new_positions[asset] = -1
+        else:
+            new_positions[asset] = 0
 
+    # If we have already a long position:
+    elif prev == 1:
+        if s > - s_bc:
+            new_positions[asset] = 0
+        else:
+            new_positions[asset] = +1
+    # If we have already a short position:
+    elif prev == -1:
+        if s < s_sc:
+            new_positions[asset] = 0
+        else:
+            new_positions[asset] = -1
     return new_positions
 
 
@@ -409,16 +409,16 @@ def compute_portfolio_weights(
     """Compute portfolio weights from trading signals.
 
     Args:
-        positions: Position signals for all assets (+1, -1, 0).
+    positions: Position signals for all assets (+1, -1, 0).
 
     Returns:
-        Portfolio weights.
+    Portfolio weights.
     """
     weights = positions.copy()
 
     # Active signals means both long and short positions, so we have to consider
     # both +1 and -1. Since we are considering equally weighted weights, we just sum the
-    # absolute values of the signal, ie |+1| + |-1| = 2 for example 
+    # absolute values of the signal, ie |+1| + |-1| = 2 for example
     count_total_active = weights.abs().sum(axis=1)
 
     # We divide each row for the number of active positions of that day, if we don't have active
