@@ -416,7 +416,15 @@ def compute_portfolio_weights(
     """
     weights = positions.copy()
 
-    # !!! COMPLETE AS APPROPRIATE !!!
+    # Active signals means both long and short positions, so we have to consider
+    # both +1 and -1. Since we are considering equally weighted weights, we just sum the
+    # absolute values of the signal, ie |+1| + |-1| = 2 for example 
+    count_total_active = weights.abs().sum(axis=1)
+
+    # We divide each row for the number of active positions of that day, if we don't have active
+    # positions that day we don't divide but we replace with zero
+
+    weights = weights.div(count_total_active.replace(0, np.nan), axis=0).fillna(0.0)
 
     return weights
 
