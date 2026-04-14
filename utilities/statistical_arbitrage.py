@@ -177,12 +177,12 @@ def estimate_ou_window_residuals(
     
     # Convert to numpy array for OLS
     X_aug = X_df.values
-    #display(X_aug)
+    # display(X_aug)
     Y = returns_ou.values
 
     # Vectorized OLS regression using NumPy
     # B contains alpha in the first row, betas in the remaining rows
-    B, residuals_by_function, _, _ = np.linalg.lstsq(X_aug, Y, rcond=None)
+    B = np.linalg.lstsq(X_aug, Y, rcond=None)[0]
 
     # Extract alphas and betas
     alphas = B[0, :]
@@ -190,8 +190,6 @@ def estimate_ou_window_residuals(
 
     # Compute daily residuals
     daily_residuals = Y - X_aug @ B
-
-    prova = residuals_by_function - daily_residuals
 
     # Compute cumulative residuals
     residuals = np.cumsum(daily_residuals, axis=0)
@@ -375,31 +373,33 @@ def update_positions(
         # I fwe don't have the s-score we are not on the mkt
         if pd.isna(s):
             new_positions[asset] = 0.0
-        continue
+            continue
+            
+        
 
-    prev = current_positions.get(asset, 0.0)
-    # We need to distinguish the cases wr to the positions in which we were in the previous instant
-    if prev == 0:
-        if asset in valid_assets:
-            if s < -s_bo:
+        prev = current_positions.get(asset, 0.0)
+        # We need to distinguish the cases wr to the positions in which we were in the previous instant
+        if prev == 0:
+            if asset in valid_assets:
+                if s < -s_bo:
+                    new_positions[asset] = +1
+                elif s > s_so:
+                    new_positions[asset] = -1
+            else:
+                new_positions[asset] = 0
+
+        # If we have already a long position:
+        elif prev == 1:
+            if s > - s_bc:
+                new_positions[asset] = 0
+            else:
                 new_positions[asset] = +1
-            elif s > s_so:
+        # If we have already a short position:
+        elif prev == -1:
+            if s < s_sc:
+                new_positions[asset] = 0
+            else:
                 new_positions[asset] = -1
-        else:
-            new_positions[asset] = 0
-
-    # If we have already a long position:
-    elif prev == 1:
-        if s > - s_bc:
-            new_positions[asset] = 0
-        else:
-            new_positions[asset] = +1
-    # If we have already a short position:
-    elif prev == -1:
-        if s < s_sc:
-            new_positions[asset] = 0
-        else:
-            new_positions[asset] = -1
     return new_positions
 
 

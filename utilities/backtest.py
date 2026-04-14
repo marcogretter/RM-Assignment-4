@@ -65,7 +65,17 @@ def portfolio_returns(
     gross_returns = aligned_portfolios.multiply(aligned_returns).sum(axis=1)
 
     if transaction_costs != 0.0:
-        pass  # !!! COMPLETE AS APPROPRIATE !!!
+        # fillna(aligned_portfolios)
+        weight_changes = aligned_portfolios.diff().fillna(aligned_portfolios)
+        
+        # Daily turnover total
+        total_turnover = weight_changes.abs().sum(axis=1)
+        
+        # Turnover one-way
+        one_way_turnover = total_turnover / 2.0
+        
+        # We subtract the costs of the gross returns
+        gross_returns = gross_returns - (one_way_turnover * transaction_costs)
 
     return gross_returns
 
