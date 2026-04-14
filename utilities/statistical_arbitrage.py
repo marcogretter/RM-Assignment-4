@@ -119,8 +119,12 @@ def estimate_factor_model(
     eigenvalues_selected = eigenvalues[:n_factors]  
     eigenvectors_selected = eigenvectors[:, :n_factors] 
 
+    # We have to standardize the returns as written in the paper. So we have to make the product between
+    # the correlation matrix and the returns/volatility of each asset
+    volatilities = returns.std().values
+    std_returns = returns / volatilities
     # Factor returns
-    factors = np.array((returns / returns.std()) @ eigenvectors_selected)
+    factors = np.array(std_returns @ eigenvectors_selected)
 
     factors_df = pd.DataFrame(
         factors, index=returns.index, columns=[f"PC{i + 1}" for i in range(n_factors)]
