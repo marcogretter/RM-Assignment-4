@@ -71,11 +71,9 @@ def portfolio_returns(
         # Daily turnover total
         total_turnover = weight_changes.abs().sum(axis=1)
         
-        # Turnover one-way
-        one_way_turnover = total_turnover / 2.0
         
         # We subtract the costs of the gross returns
-        gross_returns = gross_returns - (one_way_turnover * transaction_costs)
+        gross_returns = gross_returns - (total_turnover * transaction_costs)
 
     return gross_returns
 

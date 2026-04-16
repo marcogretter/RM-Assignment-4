@@ -338,6 +338,7 @@ def compute_s_score(
     if modified:
         kappa = params_df['kappa']
         alpha = params_df['alpha']
+        alpha = alpha / (1/252)  # same thing done with the kappa in the above function
         s_scores = s_scores - (alpha / (kappa * sigma_eq))
     
     return s_scores
@@ -379,10 +380,10 @@ def update_positions(
             new_positions[asset] = 0.0
             continue
             
-        
 
         prev = current_positions.get(asset, 0.0)
         # We need to distinguish the cases wr to the positions in which we were in the previous instant
+        
         if prev == 0:
             if asset in valid_assets:
                 if s < -s_bo:
