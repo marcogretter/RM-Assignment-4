@@ -109,11 +109,10 @@ def estimate_factor_model(
         raise ValueError(f"n_factors must be at least 1, got {n_factors}")
 
     # Compute correlation matrix
-    cov_matrix = returns.corr().values      # ERROR: it was a variance-covariance matrix, not a correlation one since the returns are
-                                            #        not standadized yet
+    corr_matrix = returns.corr().values      # ERROR: it was a variance-covariance matrix
 
     # Eigendecomposition
-    eigenvalues, eigenvectors = principal_component_analysis(cov_matrix)
+    eigenvalues, eigenvectors = principal_component_analysis(corr_matrix)
 
     # Select top n_factors
     eigenvalues_selected = eigenvalues[:n_factors]  
